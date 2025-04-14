@@ -1,0 +1,48 @@
+# Batch scripts
+/batch/
+
+# Checkpoints folder - exclude everything
+/checkpoints/
+
+# Data folder - keep the folder but exclude contents
+/data/*
+# Add an exception to keep the data folder itself
+!data/.gitkeep
+
+# Runs folder - keep the folder but exclude contents
+/runs/*
+!runs/.gitkeep
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Other common Python exclusions
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
