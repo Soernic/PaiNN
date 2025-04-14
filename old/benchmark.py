@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from painn import PaiNN
+from models.painn import PaiNN
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -118,7 +118,7 @@ def benchmark_model(model_path, test_loader, target_idx, target_normalizer, devi
 
 
 if __name__ == '__main__':
-    from data import get_QM9
+    from old.data import get_QM9
     target_idx = 1
 
     best_model = f'best_model_prop_{target_idx}.pt'

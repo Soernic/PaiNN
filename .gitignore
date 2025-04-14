@@ -46,3 +46,7 @@ ENV/
 .vscode/
 *.swp
 *.swo
+
+
+# Notebooks
+*.ipynb
