@@ -1,6 +1,8 @@
 import torch
 from torch_geometric.transforms import BaseTransform
 
+from pdb import set_trace
+
 
 class FullyConnectedTransform(BaseTransform):
     """
@@ -69,13 +71,27 @@ class TargetNormaliser(BaseTransform):
 
         return data_normalised
     
-    def inverse_transform(self, data):
-        data_denormalised = data.clone() # make a copy
+    def inverse_transform(self, data, target_idx=None):
+        """
+        data: A tensor of shape [N, k], where k is typically:
+           - 1, if you’re only predicting a single target at once, or
+           - len(self.targets_to_normalise), if you want to invert all columns you normalised.
+        target_idx: If specified, only inverse-transform that one target index from the original 19.
+                    This is handy if your model only predicts one column at a time.
+        """
+        data_denormalised = data.clone()
 
-        for idx in self.targets_to_normalise:
-            data_denormalised.y[idx] = data.y[idx]*self.stds[idx] + self.means[idx]
+        if target_idx is not None:
+            # Here data[:, 0] is your single predicted column, 
+            # and self.means[target_idx], self.stds[target_idx] are the corresponding stats.
+            data_denormalised[:, 0] = data[:, 0] * self.stds[target_idx] + self.means[target_idx]
+
+        else:
+            # Assume data has exactly one column per item in self.targets_to_normalise
+            # so we loop over i = 0..(k-1) while idx is each target from your normalised list.
+            for i, idx in enumerate(self.targets_to_normalise):
+                data_denormalised[:, i] = data[:, i] * self.stds[idx] + self.means[idx]
 
         return data_denormalised
-
 
 

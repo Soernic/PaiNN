@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch_geometric.loader import DataLoader
+from tqdm import tqdm
 
 from models.painn import PaiNN
 from utils.data_utils import ensure_dataset_setup, get_qm9_datasets
@@ -20,6 +21,11 @@ try:
     TENSORBOARD_AVAILABLE = True
 except ImportError:
     TENSORBOARD_AVAILABLE = False
+
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
+from pdb import set_trace
 
 
 class PaiNNTrainer:
@@ -46,11 +52,12 @@ class PaiNNTrainer:
         self.use_tensorboard = config['use_tensorboard']
 
         # Initialise "empty" model
-        self.model = PaiNN()
+        self.model = PaiNN().to(self.device)
 
         self.get_data() # dataloaders etc.
         self.setup_learning() # optimiser, scheduler
         self.setup_dir() # run directory and checkpoint paths
+        self.setup_writer() # tensorboard stuff
 
 
     def setup_learning(self):
@@ -66,6 +73,9 @@ class PaiNNTrainer:
     def setup_writer(self):
         if self.use_tensorboard and TENSORBOARD_AVAILABLE:
             self.writer = SummaryWriter(self.run_dir)
+        else:
+            print(f'Not using tensorboard..')
+
 
     def get_data(self):
         # Raw
@@ -81,7 +91,7 @@ class PaiNNTrainer:
         total_loss = 0.0
         num_samples = 0
 
-        for data in self.train_loader:
+        for data in tqdm(self.train_loader):
             data = data.to(self.device)
             self.optimiser.zero_grad()
             out = self.model(data)
@@ -93,6 +103,7 @@ class PaiNNTrainer:
             batch_size = data.y.size(0)
             total_loss += loss.item() * batch_size
             num_samples += batch_size
+
 
         return total_loss / num_samples
 
@@ -138,15 +149,18 @@ class PaiNNTrainer:
         }
         
         if self.normaliser:
-            preds_original = self.normaliser.inverse_transform(all_preds)
-            targets_original = self.normaliser.inverse_transform(all_targets)
+            preds_original = self.normaliser.inverse_transform(all_preds, target_idx=self.target_idx)
+            targets_original = self.normaliser.inverse_transform(all_targets, target_idx=self.target_idx)
 
             # unnormalised mae and rmse
             metrics['mae'] = F.l1_loss(preds_original, targets_original).item()
             metrics['rmse'] = torch.sqrt(F.mse_loss(preds_original, targets_original)).item()
 
-            metrics['preds_original'] = preds_original.cpu().numpy().flatten().to_list()
-            metrics['targets_original'] = targets_original.cpu().numpy().flatten().to_list()
+            metrics['preds_original'] = preds_original.cpu().numpy().flatten().tolist()
+            metrics['targets_original'] = targets_original.cpu().numpy().flatten().tolist()
+
+            # print(f'preds_original.shape: {preds_original.shape}')
+            # print(f'targets_original.shape: {targets_original.shape}')
 
         return metrics
 
@@ -191,7 +205,7 @@ class PaiNNTrainer:
                 val_ema_loss = self.ema_alpha * val_ema_loss + (1 - self.ema_alpha) * val_loss
             
             self.scheduler.step(val_ema_loss)
-            current_lr = self.optimiser.param_gropus[0]['lr']
+            current_lr = self.optimiser.param_groups[0]['lr']
 
             results['train_losses'].append(train_loss)
             results['val_losses'].append(val_loss)
@@ -243,11 +257,51 @@ class PaiNNTrainer:
         self.model.load_state_dict(torch.load(self.checkpoint_path))
         final_test_metrics = self.evaluate('test')
         
-
-        # .......
-        # .......
-        # some more stuff goes here if there is time. Not super important. 
-
+        # Save final test metrics
+        results["final_test_metrics"] = {
+            "mae": final_test_metrics.get('mae', 0),
+            "mae_normalised": final_test_metrics['mae_normalised']
+        }
+        results["final_test_mae"] = final_test_metrics.get('mae', 0)
+        
+        # Generate final prediction plot
+        final_plot_path = f"{self.run_dir}/final_predictions.png"
+        self.plot_predictions(final_test_metrics, final_plot_path)
+        
+        # Save all results
+        with open(f"{self.run_dir}/results.json", 'w') as f:
+            # Convert numpy arrays to lists for JSON serialization
+            serializable_results = {k: v for k, v in results.items() 
+                                if k not in ['preds_original', 'targets_original']}
+            json.dump(serializable_results, f, indent=2)
+        
+        # Print final performance summary
+        property_names = {
+            0: ('Dipole moment (μ)', 'D'),
+            1: ('Isotropic polarizability (α)', 'a₀³'),
+            2: ('HOMO energy', 'meV'),
+            3: ('LUMO energy', 'meV'),
+            4: ('HOMO-LUMO gap', 'meV'),
+            5: ('Electronic spatial extent ⟨R²⟩', 'a₀²'),
+            6: ('ZPVE', 'meV'),
+            7: ('U₀', 'meV'),
+            8: ('U', 'meV'),
+            9: ('H', 'meV'),
+            10: ('G', 'meV'),
+            11: ('Heat capacity', 'cal/mol·K')
+        }
+        prop_name, unit = property_names.get(self.target_idx, (f'Property {self.target_idx}', ''))
+        
+        print(f"\n=== Final Results for {prop_name} ===")
+        print(f"Best model saved at epoch {results['best_epoch']}")
+        print(f"Final Test MAE: {results['final_test_mae']:.4f} {unit}")
+        print(f"Final prediction plot saved to {final_plot_path}")
+        
+        # Close tensorboard writer if used
+        if self.writer:
+            self.writer.close()
+        
+        return results
 
     def plot_predictions(self, metrics, save_path):
         property_names = {
@@ -297,7 +351,7 @@ if __name__ == '__main__':
     # Configuration for current run
     config = {
         'target_idx': 0,
-        'lr': 0.0001,
+        'lr': 0.001,
         'weight_decay': 0.0001,
         'patience': 5,
         'factor': 0.5,
