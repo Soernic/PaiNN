@@ -45,6 +45,14 @@ class PaiNN(nn.Module):
             nn.Linear(self.state_dim, 1)
         )
 
+        self.gated_equivariant_blocks = nn.ModuleList([
+            GatedEquivariantBlock(state_dim)
+            for _ in range(self.num_rounds)
+            ])
+        
+        self.dipole_moment_readout = DipoleMoment(self.state_dim)
+
+
     def forward(self, data):
         num_nodes = data.z.size(0)
         edge = data.edge_index
@@ -61,11 +69,20 @@ class PaiNN(nn.Module):
             state, state_vec = message_layer(state, state_vec, edge, r_ij, norm_r_ij)
             state, state_vec = update_layer(state, state_vec)
 
-        # Readout
-        state = self.graph_readout(state)
-        energy = global_add_pool(state, data.batch) # lke index_add
+        # gated equivariant blocks
+        for gated_block in self.gated_equivariant_blocks: 
+            state, state_vec = gated_block(state, state_vec)
 
-        return energy # we'll replace later with diffusion stuff
+        # Readout
+        mu = self.dipole_moment_readout(state, state_vec, data.pos)
+        mu_norm = torch.norm(mu, dim=1)
+
+        dipole_moment = global_add_pool(mu_norm, data.batch)
+
+        # state = self.graph_readout(state)
+        # energy = global_add_pool(state, data.batch) # lke index_add
+
+        return dipole_moment[:, None] # we'll replace later with diffusion stuff
 
 
     def get_edge_vectors(self, data):
@@ -191,3 +208,79 @@ class PaiNNUpdate(nn.Module):
         state_vec = state_vec + delta_vi
 
         return state, state_vec
+
+
+class GatedEquivariantBlock(nn.Module):
+    def __init__(
+            self,
+            state_dim=128,
+        ):
+        super().__init__()
+
+        self.state_dim = state_dim
+        self.W = nn.Parameter(torch.randn(self.state_dim, self.state_dim))
+
+        self.scalar_path = nn.Sequential(
+            nn.Linear(2*state_dim, 2*state_dim),
+            nn.SiLU(),
+            nn.Linear(2*state_dim, 2*state_dim),
+        )
+
+    def forward(self, s, v):
+        """
+        Following schematic in Figure 3 in PaiNN paper
+        """
+
+        Wv = self.W @ v # check dimensions
+        Wv_norm = torch.norm(Wv, dim=2) # check dims
+
+        scalar_input = torch.cat((s, Wv_norm), dim=1)
+        split = self.scalar_path(scalar_input)
+
+        # Splitting into three groups
+        s, v_hadamard = torch.split(
+            split,
+            self.state_dim,
+            dim=1
+        )
+
+        v = Wv * v_hadamard[:, :, None]
+
+        return s, v       
+
+
+class VectorLinear(nn.Module):
+    """
+    A way to collapse dimensions in a vector feature of shape [batch, state_dim, spatial_dim]
+    """
+    def __init__(self, state_dim):
+        super().__init__()
+        self.state_dim = state_dim
+        self.weights = nn.Parameter(torch.ones(state_dim))
+
+    def forward(self, v):
+        v_weighted = v * self.weights[None, :, None]
+        out = v_weighted.sum(dim=1)
+        return out
+
+
+class DipoleMoment(nn.Module):
+    def __init__(self, state_dim):
+        super().__init__()
+        
+        self.state_dim = state_dim
+        self.mu_atom = VectorLinear(state_dim) # out dim 1
+        self.q_atom = nn.Linear(state_dim, 1)
+
+    def forward(self, s, v, r_vec):
+        """
+            s: Scalar features shape [batch, F]
+            v: Vector fatures shape [batch, F, 3]
+            r_vec: Coordinate of atom, shape [batch, 3]
+        """
+        vector = self.mu_atom(v)
+        scalar = self.q_atom(s)
+
+        atom_contribution = vector + scalar * r_vec
+
+        return atom_contribution
